@@ -1,0 +1,36 @@
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=1 Hq=32 Hkv=8 D=128 L=128 Page=16
+gqa_decode (splits=1): 84.22 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=1 Hq=32 Hkv=8 D=128 L=1024 Page=16
+gqa_decode (splits=1): 1249.64 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=1 Hq=32 Hkv=8 D=128 L=4096 Page=16
+gqa_decode (splits=1): 2566.58 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=4 Hq=32 Hkv=8 D=128 L=128 Page=16
+gqa_decode (splits=1): 90.20 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=4 Hq=32 Hkv=8 D=128 L=1024 Page=16
+gqa_decode (splits=1): 706.03 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=4 Hq=32 Hkv=8 D=128 L=4096 Page=16
+gqa_decode (splits=1): 8617.66 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=16 Hq=32 Hkv=8 D=128 L=128 Page=16
+gqa_decode (splits=1): 422.02 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=16 Hq=32 Hkv=8 D=128 L=1024 Page=16
+gqa_decode (splits=1): 2670.11 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.
+device=NVIDIA GeForce RTX 5060  dtype=bf16
+shape: B=16 Hq=32 Hkv=8 D=128 L=4096 Page=16
+gqa_decode (splits=1): 17762.37 us / call
+Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.

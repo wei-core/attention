@@ -38,3 +38,9 @@ out = P @ V
 - 本版本不支持 head_dim > 256，不支持 strided tensor，不支持 K/V 与 Q 混合 dtype。
 - 这是只读 paged single-token decode。未进行缓存追加、RoPE、Sliding Window、量化或状态更新。
 - 包装层只在 CPU 检查 shape/dtype/device；不会回读 CUDA 上的 `context_lens`，以免引入隐藏的同步。GPU 元数据必须由调用方保证合法。
+
+## Split-KV 与 KV Append（实验接口）
+
+`gqa_decode_split` 接受与 `gqa_decode` 相同的输入，并通过 `splits` 指定 1–65535 个分段。每段生成 FP32 最大值、指数和和未归一化输出，再在同一 CUDA stream 合并；空段具有零权重。每次调用目前会分配临时 buffer，尚无自适应分段策略。
+
+`kv_append(key, value, k_cache, v_cache, block_table, positions)` 原地写入每个序列的一个 token：`key/value` 为 `[B,Hkv,D]`，`positions` 为 CUDA int32 `[B]`，页布局与 decode 相同。调用方必须保证位置和物理页有效、不同写入不冲突，并负责分配页面、更新长度以及跨 stream 的同步。算子不检查 GPU 元数据值域，也不管理页面所有权。

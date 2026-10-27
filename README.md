@@ -13,7 +13,7 @@
 | Compressed | 规划中 | CSA / HCA 等新结构（以确定的官方数学定义为准） |
 | Common / Cache | 基础设施 | Warp Reduce；后续增加 KV Append、Split-KV、量化等 |
 
-当前 `gqa_decode` **不是**高性能版本，而是用于验证完整研发链路的可编译、可测试的 CUDA 基线。它顺序遍历历史 KV，不使用 Tensor Core，也没有 Split-KV，不适合与 FlashInfer 比性能。
+当前 `gqa_decode` **不是**高性能版本，而是用于验证完整研发链路的可编译、可测试的 CUDA 基线。它顺序遍历历史 KV，不使用 Tensor Core，主路径没有自动 Split-KV dispatch，不适合与 FlashInfer 比性能。
 
 ## 适用环境
 
@@ -81,3 +81,7 @@ out = qda.gqa_decode(q, k_cache, v_cache, block_table, context_lens)
 - 已提供 CPU 参考测试；**未在实际 RTX 5060 上编译及执行**，在 GPU 机器上需验证构建与数值正确性。
 - 当前仅有 CUDA Forward，无 Backward、Torch Compile/FakeTensor、FP8/FP4、CUDA Graph 适配承诺。
 - 后续每个新 Kernel 先编写 Reference + Contract + Tests，再加入 CUDA 实现和 Benchmark。
+
+## 实验性阶段二进展
+
+`qda.gqa_decode_split(..., splits=4)` 按 KV 分段计算并合并在线 Softmax 状态；`qda.kv_append(key, value, k_cache, v_cache, block_table, positions)` 原地写入单 Token KV。两者的输入和调用方责任见 [算子契约](docs/KERNEL_CONTRACT.md)。Split-KV 当前每次调用分配临时空间，没有自适应 dispatch。Prefill、Tensor Core 路径、框架集成和完整性能分析仍未实现，不能视为阶段二验收完成。

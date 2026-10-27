@@ -3,6 +3,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime.h>
+#include <math_constants.h>
 #include <torch/types.h>
 
 #include <cmath>
@@ -19,7 +20,7 @@ __global__ void gqa_paged_decode_kernel(
     const scalar_t* __restrict__ v,
     const int32_t* __restrict__ block_table,
     const int32_t* __restrict__ context_lens,
-    scalar_t* __restrict__ out,
+    scalar_t* __restrict__ out, float* __restrict__ partial, int splits,
     int hq, int hkv, int d, int block_size, int max_pages,
     float scale) {
     const int h = blockIdx.x;
@@ -35,7 +36,9 @@ __global__ void gqa_paged_decode_kernel(
     float normalizer = 0.f;
     float acc = 0.f;
 
-    for (int t = 0; t < length; ++t) {
+    const int start = static_cast<int>((static_cast<int64_t>(length) * blockIdx.z) / splits);
+    const int end = static_cast<int>((static_cast<int64_t>(length) * (blockIdx.z + 1)) / splits);
+    for (int t = start; t < end; ++t) {
         const int page = t / block_size;
         const int slot = t % block_size;
         const int32_t physical_block = block_table[pages_base + page];
@@ -60,9 +63,33 @@ __global__ void gqa_paged_decode_kernel(
         }
         m = new_m;
     }
-    for (int col = tid; col < d; col += blockDim.x) {
-        out[q_base + col] = static_cast<scalar_t>(normalizer > 0.f ? acc / normalizer : 0.f);
+    if (splits == 1) {
+        if (tid < d) out[q_base + tid] = static_cast<scalar_t>(normalizer > 0.f ? acc / normalizer : 0.f);
+    } else {
+        const int64_t base = ((static_cast<int64_t>(b) * hq + h) * splits + blockIdx.z) * (d + 2);
+        if (tid == 0) { partial[base] = m; partial[base + 1] = normalizer; }
+        if (tid < d) partial[base + 2 + tid] = acc;
     }
+}
+
+
+template <typename scalar_t>
+__global__ void merge_splits(const float* partial, scalar_t* out, int hq, int d, int splits) {
+    int h = blockIdx.x, b = blockIdx.y, col = threadIdx.x;
+    float m = -CUDART_INF_F, l = 0.f, acc = 0.f;
+    for (int s = 0; s < splits; ++s) {
+        int64_t base = ((static_cast<int64_t>(b) * hq + h) * splits + s) * (d + 2);
+        float other_l = partial[base + 1];
+        if (other_l == 0.f) continue;
+        float other_m = partial[base];
+        float next_m = fmaxf(m, other_m);
+        float a = l == 0.f ? 0.f : expf(m - next_m);
+        float beta = expf(other_m - next_m);
+        if (col < d) acc = a * acc + beta * partial[base + 2 + col];
+        l = a * l + beta * other_l;
+        m = next_m;
+    }
+    if (col < d) out[(static_cast<int64_t>(b) * hq + h) * d + col] = static_cast<scalar_t>(l > 0.f ? acc / l : 0.f);
 }
 
 void check_cuda_contiguous(const torch::Tensor& t, const char* name) {
@@ -72,13 +99,14 @@ void check_cuda_contiguous(const torch::Tensor& t, const char* name) {
 
 } // namespace
 
-torch::Tensor gqa_decode_cuda(
+torch::Tensor gqa_decode_impl(
     const torch::Tensor& q,
     const torch::Tensor& k_cache,
     const torch::Tensor& v_cache,
     const torch::Tensor& block_table,
     const torch::Tensor& context_lens,
-    double scale) {
+    double scale, int64_t splits) {
+    TORCH_CHECK(splits >= 1 && splits <= 65535, "splits must be in [1, 65535]");
     check_cuda_contiguous(q, "q");
     check_cuda_contiguous(k_cache, "k_cache");
     check_cuda_contiguous(v_cache, "v_cache");
@@ -121,7 +149,8 @@ torch::Tensor gqa_decode_cuda(
 
     const int d = static_cast<int>(q.size(2));
     const int threads = d <= 32 ? 32 : d <= 64 ? 64 : d <= 128 ? 128 : 256;
-    const dim3 grid(static_cast<unsigned int>(q.size(1)), static_cast<unsigned int>(q.size(0)));
+    const dim3 grid(static_cast<unsigned int>(q.size(1)), static_cast<unsigned int>(q.size(0)), static_cast<unsigned int>(splits));
+    auto partial = splits > 1 ? at::empty({q.size(0), q.size(1), splits, d + 2}, q.options().dtype(at::kFloat)) : at::empty({0}, q.options().dtype(at::kFloat));
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, q.scalar_type(),
@@ -132,16 +161,28 @@ torch::Tensor gqa_decode_cuda(
                 v_cache.data_ptr<scalar_t>(),
                 block_table.data_ptr<int32_t>(),
                 context_lens.data_ptr<int32_t>(),
-                out.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), partial.data_ptr<float>(), static_cast<int>(splits),
                 static_cast<int>(q.size(1)),
                 static_cast<int>(k_cache.size(2)),
                 d,
                 static_cast<int>(k_cache.size(1)),
                 static_cast<int>(block_table.size(1)),
                 static_cast<float>(scale));
+            if (splits > 1) {
+                const dim3 merge_grid(q.size(1), q.size(0));
+                merge_splits<scalar_t><<<merge_grid, threads, 0, stream>>>(partial.data_ptr<float>(), out.data_ptr<scalar_t>(), q.size(1), d, splits);
+            }
         });
     // Surface invalid kernel-launch errors, without synchronizing the GPU.
     const cudaError_t status = cudaGetLastError();
     TORCH_CHECK(status == cudaSuccess, "gqa_decode kernel launch failed: ", cudaGetErrorString(status));
     return out;
+}
+
+
+torch::Tensor gqa_decode_cuda(const torch::Tensor& q, const torch::Tensor& k, const torch::Tensor& v, const torch::Tensor& table, const torch::Tensor& lengths, double scale) {
+    return gqa_decode_impl(q, k, v, table, lengths, scale, 1);
+}
+torch::Tensor gqa_decode_split_cuda(const torch::Tensor& q, const torch::Tensor& k, const torch::Tensor& v, const torch::Tensor& table, const torch::Tensor& lengths, double scale, int64_t splits) {
+    return gqa_decode_impl(q, k, v, table, lengths, scale, splits);
 }

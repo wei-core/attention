@@ -14,6 +14,7 @@ setup(
             sources=[
                 str(ROOT / "csrc" / "binding" / "torch_ops.cpp"),
                 str(ROOT / "csrc" / "dense" / "gqa_decode.cu"),
+                str(ROOT / "csrc" / "cache" / "kv_append.cu"),
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],

@@ -25,7 +25,10 @@ __device__ __forceinline__ float block_sum(float x, float* scratch) {
         if (lane == 0) scratch[0] = total;
     }
     __syncthreads();
-    return scratch[0];
+    // All warps must consume the result before the next reduction overwrites it.
+    float result = scratch[0];
+    __syncthreads();
+    return result;
 }
 
 }  // namespace qd_attention

@@ -39,3 +39,19 @@ def gqa_decode(
     return torch.ops.qd_attention.gqa_decode(
         q, k_cache, v_cache, block_table, context_lens, float(scale)
     )
+
+
+def gqa_decode_split(q, k_cache, v_cache, block_table, context_lens, *, splits=4, scale=None):
+    """Decode independent KV partitions and merge FP32 online-softmax states."""
+    if _LOAD_ERROR is not None:
+        raise RuntimeError("qd_attention CUDA extension was not loaded") from _LOAD_ERROR
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    return torch.ops.qd_attention.gqa_decode_split(q, k_cache, v_cache, block_table, context_lens, float(scale), splits)
+
+
+def kv_append(key, value, k_cache, v_cache, block_table, positions):
+    """Write one token per sequence; caller owns valid, distinct destinations."""
+    if _LOAD_ERROR is not None:
+        raise RuntimeError("qd_attention CUDA extension was not loaded") from _LOAD_ERROR
+    torch.ops.qd_attention.kv_append(key, value, k_cache, v_cache, block_table, positions)
