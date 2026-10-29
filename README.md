@@ -87,3 +87,5 @@ out = qda.gqa_decode(q, k_cache, v_cache, block_table, context_lens)
 `qda.gqa_decode_split(..., splits=4, backend="triton")` 提供按 Token 并行的分页 Decode，可传入可复用的 FP32 workspace。`qda.gqa_decode_auto(...)` 使用基于 KV 容量、头数和 SM 数量的初步调度策略；该策略尚未覆盖所有工作负载的调优。`qda.kv_append(...)` 原地写入单 Token KV。输入和调用方责任见 [算子契约](docs/KERNEL_CONTRACT.md)。
 
 `qda.gqa_prefill(...)` 提供 CUDA 基础路径，`backend="tensorcore"` 提供可选 Triton FP16/BF16 分块路径。后者需要安装 Triton；对 CUDA 长度输入采用右下对齐因果语义，详见 [Prefill 契约](docs/PREFILL_CONTRACT.md)。在 RTX 5060 的测试中生成的 PTX 包含 FP16/BF16 `mma.sync` 指令。当前均为 forward 算子，不含 Nano-vLLM 集成。性能结果和限制见 [测量记录](results/stage1_20261029/README.md)。
+
+各公开算子的清单、性能对照与优化思路见 [Attention 算子与性能报告](docs/ATTENTION_OPERATORS_AND_BENCHMARKS.md)。
