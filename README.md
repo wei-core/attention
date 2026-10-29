@@ -94,3 +94,5 @@ out = qda.gqa_decode(q, k_cache, v_cache, block_table, context_lens)
 ## 阶段三至五计算核心
 
 已提供 MLA Direct/Absorbed、Paged Latent KV、Qwen 门控/卷积/Delta 状态、DSA Indexer/Top-K/Sparse MLA 的正确性基线。输入预处理、状态和 Cache 所有权、形状限制及未覆盖内容见 [阶段三至五契约](docs/STAGE345_CONTRACT.md)。本轮不做性能调优或 Nano-vLLM 集成。
+
+所有已实现算子的本轮性能、理论模型和官方公开性能对照见 [全算子性能报告](docs/ALL_ATTENTION_OPERATORS_PERFORMANCE.md)。
