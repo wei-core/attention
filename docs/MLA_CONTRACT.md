@@ -1,0 +1,9 @@
+# Experimental MLA forward primitives
+
+`mla_query_absorb(q_nope, w_uk)` maps `[B,T,H,Dn]` and `[H,Dn,Dc]` to `[B,T,H,Dc]`; `mla_value_project(u, w_uv)` maps `[B,T,H,Dc]` and `[H,Dv,Dc]` to `[B,T,H,Dv]`. Inputs are contiguous CUDA FP32/FP16/BF16 with matching dtype. Projection accumulation uses FP32 and output is cast to input dtype.
+
+`latent_kv_write(latent, rope_key, cache, slots)` writes `[N,Dc]` and `[N,Dr]` to the cache `[Nblocks,P,Dc+Dr]` in place, using unique **physical slot** int64 `[N]`. The caller must ensure slots are in range and non-overlapping. Latents must already be RMS-normalized and positional keys already rotated; this primitive does neither.
+
+`mla_latent_attention(q_absorbed, q_rope, cache, table, lengths, positions, scale, causal=True, indices=None)` reads a paged cache and returns `[B,T,H,Dc]`. `table` is CUDA int32 `[B,max_pages]`, lengths are int32 `[B]`, positions are absolute int32 `[B,T]`. Logical position `s` maps to `table[b,s//P]`, slot `s%P`. With causal masking, only `s <= positions[b,t]` and `s < lengths[b]` are visible. `indices` is optional int32 `[B,T,K]` containing unique logical positions or `-1`; invalid/padded selections are skipped. Empty rows yield zero. The caller must ensure metadata and physical page IDs are valid, data initialized, streams ordered, and cache ownership is respected. No GPU metadata validation is performed in the hot path.
+
+`mla_decode` composes absorption, latent attention, and value projection. It accepts multiple query positions; `mla_prefill` provides a separate direct unabsorbed contiguous path. The scale defaults to `1/sqrt(Dn+Dr)` and can be overridden for model-specific scaling. Softmax and reductions use FP32; intermediate projection tensors are cast to the input dtype. Dc is limited to 512 in the latent attention kernel. These are forward-only correctness baselines, not optimized kernels.

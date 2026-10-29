@@ -1,0 +1,63 @@
+import math
+import pytest
+import torch
+from qd_attention.mla import mla_query_absorb, mla_value_project, latent_kv_write, mla_decode
+from qd_attention.reference.mla import mla_reference
+from qd_attention import is_cuda_extension_loaded
+
+pytestmark = pytest.mark.skipif(not (torch.cuda.is_available() and is_cuda_extension_loaded()), reason='requires CUDA extension')
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('sparse',[False, True])
+def test_paged_mla(dtype,sparse):
+    torch.manual_seed(10)
+    b,t,h,dn,dr,dc,dv,L,P=2,3,3,8,6,11,7,9,4
+    q=torch.randn(b,t,h,dn,device='cuda',dtype=dtype); qr=torch.randn(b,t,h,dr,device='cuda',dtype=dtype)
+    latent=torch.randn(b,L,dc,device='cuda',dtype=dtype); rope=torch.randn(b,L,dr,device='cuda',dtype=dtype)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype); wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)
+    table=torch.tensor([[4,0,5],[1,3,2]],device='cuda',dtype=torch.int32)
+    lens=torch.tensor([9,5],device='cuda',dtype=torch.int32)
+    positions=torch.tensor([[0,3,8],[-1,2,4]],device='cuda',dtype=torch.int32)
+    cache=torch.zeros(6,P,dc+dr,device='cuda',dtype=dtype)
+    slots=torch.tensor([int(table[bb,i//P])*P+i%P for bb in range(b) for i in range(L)],device='cuda',dtype=torch.int64)
+    latent_kv_write(latent.reshape(-1,dc),rope.reshape(-1,dr),cache,slots)
+    indices=torch.tensor([[[0,-1,-1],[0,2,3],[1,4,8]],[[0,-1,-1],[0,2,-1],[1,3,4]]],device='cuda',dtype=torch.int32) if sparse else None
+    actual=mla_decode(q,qr,cache,table,lens,positions,wk,wv,indices=indices)
+    expected=mla_reference(q,qr,latent,rope,wk,wv,positions,lens,indices=indices)
+    alt=mla_reference(q,qr,latent,rope,wk,wv,positions,lens,absorbed=True,indices=indices)
+    torch.testing.assert_close(expected,alt,atol=2e-5,rtol=2e-5)
+    tol=4e-4 if dtype==torch.float32 else .07 if dtype==torch.float16 else .4
+    torch.testing.assert_close(actual,expected,atol=tol,rtol=tol)
+
+
+def test_mla_projection_and_contract():
+    q=torch.randn(1,2,3,5,device='cuda'); wk=torch.randn(3,5,7,device='cuda'); wv=torch.randn(3,4,7,device='cuda')
+    qa=mla_query_absorb(q,wk)
+    torch.testing.assert_close(qa,torch.einsum('bthd,hdc->bthc',q,wk),atol=1e-5,rtol=1e-5)
+    torch.testing.assert_close(mla_value_project(qa,wv),torch.einsum('bthc,hvc->bthv',qa,wv),atol=1e-5,rtol=1e-5)
+    with pytest.raises(RuntimeError,match='dimension'):
+        mla_query_absorb(q,torch.randn(3,6,7,device='cuda'))
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+def test_direct_prefill(dtype):
+    from qd_attention.mla import mla_prefill
+    torch.manual_seed(12);b,t,h,dn,dr,dc,dv,L=2,3,2,8,6,11,7,9
+    q=torch.randn(b,t,h,dn,device='cuda',dtype=dtype);qr=torch.randn(b,t,h,dr,device='cuda',dtype=dtype)
+    c=torch.randn(b,L,dc,device='cuda',dtype=dtype);kr=torch.randn(b,L,dr,device='cuda',dtype=dtype)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype);wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)
+    lens=torch.tensor([9,5],device='cuda',dtype=torch.int32);pos=torch.tensor([[0,3,8],[-1,2,4]],device='cuda',dtype=torch.int32)
+    actual=mla_prefill(q,qr,c,kr,wk,wv,lens,pos); expected=mla_reference(q,qr,c,kr,wk,wv,pos,lens)
+    tol=3e-4 if dtype==torch.float32 else .02 if dtype==torch.float16 else .08
+    torch.testing.assert_close(actual,expected,atol=tol,rtol=tol)
+
+
+def test_mla_typical_latent_width():
+    torch.manual_seed(55);b,t,h,dn,dr,dc,dv,L=1,1,2,32,64,512,64,17
+    q=torch.randn(b,t,h,dn,device='cuda',dtype=torch.bfloat16);qr=torch.randn(b,t,h,dr,device='cuda',dtype=torch.bfloat16)
+    c=torch.randn(b,L,dc,device='cuda',dtype=torch.bfloat16);kr=torch.randn(b,L,dr,device='cuda',dtype=torch.bfloat16)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=torch.bfloat16)/math.sqrt(dn);wv=torch.randn(h,dv,dc,device='cuda',dtype=torch.bfloat16)/math.sqrt(dc)
+    table=torch.tensor([[1,0]],device='cuda',dtype=torch.int32);cache=torch.zeros(2,16,dc+dr,device='cuda',dtype=torch.bfloat16)
+    slots=torch.tensor(list(range(16,32))+[0],device='cuda',dtype=torch.int64);latent_kv_write(c.reshape(L,dc),kr.reshape(L,dr),cache,slots)
+    lens=torch.tensor([L],device='cuda',dtype=torch.int32);positions=torch.tensor([[16]],device='cuda',dtype=torch.int32)
+    got=mla_decode(q,qr,cache,table,lens,positions,wk,wv);ref=mla_reference(q,qr,c,kr,wk,wv,positions,lens)
+    torch.testing.assert_close(got,ref,atol=.05,rtol=.08)

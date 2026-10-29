@@ -1,3 +1,3 @@
-# Sparse Attention (planned)
+# Sparse Attention
 
-未来将实现：DSA Lightning Indexer、Top-K 选择、稀疏 Gather、Sparse MLA；拆开测量路由开销与 Attention Kernel 时间。
+CUDA Indexer、Top-K 选择与复用 MLA 的 Sparse Attention 为计算正确性基线，详见 [阶段三至五契约](../../docs/STAGE345_CONTRACT.md)。

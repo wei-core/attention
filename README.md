@@ -7,9 +7,9 @@
 | 模块 | 状态 | 内容 |
 |---|---|---|
 | Dense Attention | **已实现一个正确性基线** | `gqa_decode`：Paged KV + MHA/MQA/GQA，单 CTA/Query Head，在线 Softmax |
-| MLA | 规划中 | Latent KV / Matrix Absorption / MLA Decode |
-| Linear | 规划中 | Gated DeltaNet：Chunkwise、Recurrent |
-| Sparse | 规划中 | DSA：Indexer、Top-K、Sparse MLA |
+| MLA | 正确性基线 | Direct Prefill、Matrix Absorption、Paged Latent KV Decode |
+| Linear | 正确性基线 | Gated DeltaNet：Chunkwise、Recurrent、因果卷积 |
+| Sparse | 正确性基线 | DSA：Indexer、Top-K、Sparse MLA |
 | Compressed | 规划中 | CSA / HCA 等新结构（以确定的官方数学定义为准） |
 | Common / Cache | 基础设施 | Warp Reduce、单 Token KV Append、Split-KV；量化待实现 |
 
@@ -89,3 +89,8 @@ out = qda.gqa_decode(q, k_cache, v_cache, block_table, context_lens)
 `qda.gqa_prefill(...)` 提供 CUDA 基础路径，`backend="tensorcore"` 提供可选 Triton FP16/BF16 分块路径。后者需要安装 Triton；对 CUDA 长度输入采用右下对齐因果语义，详见 [Prefill 契约](docs/PREFILL_CONTRACT.md)。在 RTX 5060 的测试中生成的 PTX 包含 FP16/BF16 `mma.sync` 指令。当前均为 forward 算子，不含 Nano-vLLM 集成。性能结果和限制见 [测量记录](results/stage1_20261029/README.md)。
 
 各公开算子的清单、性能对照与优化思路见 [Attention 算子与性能报告](docs/ATTENTION_OPERATORS_AND_BENCHMARKS.md)。
+
+
+## 阶段三至五计算核心
+
+已提供 MLA Direct/Absorbed、Paged Latent KV、Qwen 门控/卷积/Delta 状态、DSA Indexer/Top-K/Sparse MLA 的正确性基线。输入预处理、状态和 Cache 所有权、形状限制及未覆盖内容见 [阶段三至五契约](docs/STAGE345_CONTRACT.md)。本轮不做性能调优或 Nano-vLLM 集成。

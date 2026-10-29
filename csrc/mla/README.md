@@ -1,3 +1,3 @@
-# MLA (planned)
+# MLA
 
-未来将实现：MLA Prefill / Decode、低秩 Latent KV 缓存、Decoupled RoPE、Matrix Absorption 路径。需先确定 DeepSeek 模型维度与参考实现；当前没有占位 CUDA 代码或 API。
+CUDA Direct Prefill、Paged Latent Attention、Matrix Absorption 与 Cache 写入见 [阶段三至五契约](../../docs/STAGE345_CONTRACT.md)。输入 latent 应已归一化，RoPE 应已在上游应用。

@@ -1,3 +1,3 @@
-# Linear Attention (planned)
+# Linear Attention
 
-未来将实现：Gated DeltaNet 的 Chunkwise Prefill、Recurrent Decode、Conv State / delta-state 更新。与 Dense Attention 的数学结构不同，独立参考测试。
+Gated DeltaNet 的 CUDA Recurrent、Chunkwise 与卷积实现在 `csrc/qwen/`，接口与状态约定见 [阶段三至五契约](../../docs/STAGE345_CONTRACT.md)。
