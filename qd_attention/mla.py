@@ -44,8 +44,7 @@ def mla_decode(q_nope, q_rope, cache, block_table, lengths, positions, w_uk, w_u
     if scale is None: scale = 1.0 / math.sqrt(q_nope.shape[-1] + q_rope.shape[-1])
     if (q_nope.ndim == 4 and q_nope.shape[1] == 1 and cache.ndim == 3 and
             block_table.ndim == 2 and w_uk.ndim == 3 and w_uk.shape[-1] <= 512 and
-            (indices is not None and indices.ndim == 3 and indices.shape[-1] < 512 or
-             indices is None and cache.shape[1] * block_table.shape[1] < 512)):
+            (indices is None or indices.ndim == 3)):
         _ready()
         return torch.ops.qd_attention.mla_decode_fused(q_nope, q_rope, cache, block_table,
             lengths, positions, w_uk, w_uv, indices, float(scale), causal)
@@ -54,8 +53,13 @@ def mla_decode(q_nope, q_rope, cache, block_table, lengths, positions, w_uk, w_u
     return mla_value_project(latent, w_uv)
 
 
-def mla_prefill(q_nope, q_rope, latent, rope_key, w_uk, w_uv, lengths, positions, *, scale=None):
-    """Direct dense MLA with absolute-position causal mask, FP32 accumulators."""
+def mla_prefill(q_nope, q_rope, latent, rope_key, w_uk, w_uv, lengths, positions, *, scale=None, backend="cuda"):
+    """Dense MLA with an absolute-position causal mask and FP32 accumulation.
+
+    ``backend="wmma"`` is experimental and rounds MMA operands to input dtype;
+    it requires FP16/BF16, T >= 16, Dc <= 256 and SM80+.
+    """
     _ready()
     if scale is None: scale=1.0/math.sqrt(q_nope.shape[-1]+q_rope.shape[-1])
-    return torch.ops.qd_attention.mla_prefill_direct(q_nope,q_rope,latent,rope_key,w_uk,w_uv,lengths,positions,float(scale))
+    if backend not in ("cuda", "wmma"): raise ValueError("backend must be cuda or wmma")
+    return torch.ops.qd_attention.mla_prefill_direct(q_nope,q_rope,latent,rope_key,w_uk,w_uv,lengths,positions,float(scale),backend=="wmma")

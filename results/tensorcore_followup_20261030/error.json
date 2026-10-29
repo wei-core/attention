@@ -1,0 +1,59 @@
+[
+  {
+    "operator": "delta",
+    "seed": 101,
+    "dtype": "fp32",
+    "output_max_abs": 5.960464477539063e-08,
+    "state_max_abs": 3.5762786865234375e-07
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 101,
+    "dtype": "torch.float16",
+    "output_max_abs": 0.00048828125
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 101,
+    "dtype": "torch.bfloat16",
+    "output_max_abs": 0.0078125
+  },
+  {
+    "operator": "delta",
+    "seed": 102,
+    "dtype": "fp32",
+    "output_max_abs": 4.470348358154297e-08,
+    "state_max_abs": 4.76837158203125e-07
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 102,
+    "dtype": "torch.float16",
+    "output_max_abs": 0.00048828125
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 102,
+    "dtype": "torch.bfloat16",
+    "output_max_abs": 0.0078125
+  },
+  {
+    "operator": "delta",
+    "seed": 103,
+    "dtype": "fp32",
+    "output_max_abs": 5.587935447692871e-08,
+    "state_max_abs": 3.5762786865234375e-07
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 103,
+    "dtype": "torch.float16",
+    "output_max_abs": 0.0009765625
+  },
+  {
+    "operator": "mla_prefill",
+    "seed": 103,
+    "dtype": "torch.bfloat16",
+    "output_max_abs": 0.00390625
+  }
+]

@@ -35,9 +35,14 @@ def causal_conv1d(x, weight, state):
     _ready(); return torch.ops.qd_attention.causal_conv1d(x,weight,state)
 
 
-def delta_chunkwise(q,k,v,g,beta,state,*,chunk_size=32,eps=1e-6):
-    """Chunkwise triangular solve, FP32 state; returns output and new state."""
-    _ready(); return torch.ops.qd_attention.delta_chunkwise(q,k,v,g,beta,state,chunk_size,float(eps))
+def delta_chunkwise(q,k,v,g,beta,state,*,chunk_size=32,eps=1e-6,backend="cuda"):
+    """Chunkwise triangular solve, FP32 state; returns output and new state.
+
+    ``backend="wmma"`` is experimental: it uses compensated TF32 WMMA for
+    off-diagonal updates and requires chunk >= 32 and Dk+Dv >= 32 on SM80+.
+    """
+    if backend not in ("cuda", "wmma"): raise ValueError("backend must be cuda or wmma")
+    _ready(); return torch.ops.qd_attention.delta_chunkwise(q,k,v,g,beta,state,chunk_size,float(eps),backend=="wmma")
 
 
 def causal_conv1d_update(x, weight, state):

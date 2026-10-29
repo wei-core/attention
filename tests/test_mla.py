@@ -109,3 +109,41 @@ def test_fused_mla_decode_matches_unfused(dtype,sparse,causal):
     actual=mla_decode(q,qr,cache,table,lens,pos,wk,wv,scale=scale,causal=causal,indices=ix)
     tol=1e-4 if dtype==torch.float32 else .02 if dtype==torch.float16 else .12
     torch.testing.assert_close(actual,ref,atol=tol,rtol=tol)
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('sparse',[False,True])
+@pytest.mark.parametrize('causal',[False,True])
+def test_fused_split_decode_matches_unfused(dtype,sparse,causal):
+    from qd_attention.mla import mla_latent_attention
+    torch.manual_seed(833);b,h,dn,dr,dc,dv,L,P=2,2,9,7,33,11,544,16
+    q=torch.randn(b,1,h,dn,device='cuda',dtype=dtype);qr=torch.randn(b,1,h,dr,device='cuda',dtype=dtype)
+    cache=torch.randn(68,P,dc+dr,device='cuda',dtype=dtype);table=torch.arange(68,device='cuda',dtype=torch.int32).reshape(b,-1)
+    lens=torch.tensor([L,0],device='cuda',dtype=torch.int32);pos=torch.tensor([[499],[-1]],device='cuda',dtype=torch.int32)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype)/math.sqrt(dn);wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)/math.sqrt(dc)
+    ix=torch.arange(512,device='cuda',dtype=torch.int32).reshape(1,1,-1).expand(b,1,-1).contiguous() if sparse else None
+    scale=1/math.sqrt(dn+dr)
+    ref=mla_value_project(mla_latent_attention(mla_query_absorb(q,wk),qr,cache,table,lens,pos,scale=scale,causal=causal,indices=ix),wv)
+    got=mla_decode(q,qr,cache,table,lens,pos,wk,wv,scale=scale,causal=causal,indices=ix)
+    tol=1e-4 if dtype==torch.float32 else .02 if dtype==torch.float16 else .05
+    torch.testing.assert_close(got,ref,atol=tol,rtol=tol)
+
+@pytest.mark.parametrize('dtype',[torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('dc,dr',[(33,7),(64,16)])
+def test_mla_prefill_wmma_tiles(dtype,dc,dr):
+    from qd_attention.mla import mla_prefill
+    torch.manual_seed(778);b,t,h,dn,dv,L=2,19,2,16,16,35
+    q=torch.randn(b,t,h,dn,device='cuda',dtype=dtype);qr=torch.randn(b,t,h,dr,device='cuda',dtype=dtype)
+    c=torch.randn(b,L,dc,device='cuda',dtype=dtype);kr=torch.randn(b,L,dr,device='cuda',dtype=dtype)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype)/math.sqrt(dn);wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)/math.sqrt(dc)
+    lens=torch.tensor([L,0],device='cuda',dtype=torch.int32);pos=torch.arange(L-t,L,device='cuda',dtype=torch.int32).repeat(b,1)
+    got=mla_prefill(q,qr,c,kr,wk,wv,lens,pos,backend="wmma");ref=mla_reference(q,qr,c,kr,wk,wv,pos,lens)
+    tol=.025 if dtype==torch.float16 else .08
+    assert torch.isfinite(got).all()
+    torch.testing.assert_close(got,ref,atol=tol,rtol=tol)
+
+
+def test_mla_prefill_wmma_rejects_unsupported_dtype():
+    from qd_attention.mla import mla_prefill
+    q=torch.randn(1,16,1,4,device='cuda');qr=torch.randn(1,16,1,4,device='cuda');latent=torch.randn(1,16,4,device='cuda');rope=torch.randn(1,16,4,device='cuda');wk=torch.randn(1,4,4,device='cuda');wv=torch.randn(1,4,4,device='cuda');lens=torch.tensor([16],device='cuda',dtype=torch.int32);pos=torch.arange(16,device='cuda',dtype=torch.int32).reshape(1,16)
+    with pytest.raises(RuntimeError,match='WMMA requires'):
+        mla_prefill(q,qr,latent,rope,wk,wv,lens,pos,backend='wmma')

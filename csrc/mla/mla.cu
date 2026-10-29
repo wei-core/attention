@@ -102,6 +102,37 @@ template<typename T> __global__ void fused_decode(const T* q,const T* qr,const T
  for(int d=tid;d<dv;d+=blockDim.x){float x=0;for(int c=0;c<dc;c++)x+=acc[c]*float(wv[(static_cast<int64_t>(h)*dv+d)*dc+c]);out[row*dv+d]=static_cast<T>(x);}
 }
 
+// Split-KV stages fuse query absorption into every split and fuse the final
+// value projection into the softmax merge; workspace stores only partials.
+template<typename T> __global__ void fused_split(const T* q,const T* qr,const T* cache,const T* wk,const int32_t* table,const int32_t* lens,const int32_t* pos,const int32_t* selected,float* partial,int tq,int H,int dn,int dr,int dc,int page,int pages,int nk,float scale,bool causal,bool sparse,int splits){
+ int h=blockIdx.x/splits,part=blockIdx.x%splits,b=blockIdx.y,t=blockIdx.z,tid=threadIdx.x;int64_t row=(static_cast<int64_t>(b)*tq+t)*H+h;
+ extern __shared__ float qa[];__shared__ float red[8];
+ for(int c=tid;c<dc;c+=blockDim.x){float x=0;for(int d=0;d<dn;d++)x+=float(q[row*dn+d])*float(wk[(static_cast<int64_t>(h)*dn+d)*dc+c]);qa[c]=float(static_cast<T>(x));}
+ __syncthreads();int end=causal?min(lens[b],max(0,pos[b*tq+t]+1)):lens[b];int count=sparse?nk:end;
+ int begin=static_cast<int64_t>(count)*part/splits,stop=static_cast<int64_t>(count)*(part+1)/splits;qd_attention::SoftmaxState state;float acc[2]={0,0};
+ for(int i=begin;i<stop;i++){
+  int index=sparse?selected[(static_cast<int64_t>(b)*tq+t)*nk+i]:i;if(index<0 || index>=end)continue;
+  int phys=table[static_cast<int64_t>(b)*pages+index/page];int64_t off=(static_cast<int64_t>(phys)*page+index%page)*(dc+dr);float dot=0;
+  for(int c=tid;c<dc;c+=blockDim.x)dot+=qa[c]*float(cache[off+c]);
+  for(int d=tid;d<dr;d+=blockDim.x)dot+=float(qr[row*dr+d])*float(cache[off+dc+d]);
+  float score=qd_attention::block_sum(dot,red)*scale,a,p;state.add(score,a,p);
+  for(int c=tid;c<dc;c+=blockDim.x)acc[c/256]=a*acc[c/256]+p*float(cache[off+c]);
+ }
+ int64_t base=(row*splits+part)*(dc+2);
+ for(int c=tid;c<dc;c+=blockDim.x)partial[base+2+c]=acc[c/256];
+ if(!tid){partial[base]=state.max;partial[base+1]=state.sum;}
+}
+template<typename T> __global__ void fused_split_merge(const float* partial,const T* wv,T* out,int H,int dc,int dv,int splits){
+ int row=blockIdx.x,h=row%H,tid=threadIdx.x;extern __shared__ float lat[];qd_attention::SoftmaxState state;float acc[2]={0,0};
+ for(int part=0;part<splits;part++){
+  int64_t base=(static_cast<int64_t>(row)*splits+part)*(dc+2);float a,p;state.merge(partial[base],partial[base+1],a,p);
+  for(int c=tid;c<dc;c+=blockDim.x)acc[c/256]=a*acc[c/256]+p*partial[base+2+c];
+ }
+ for(int c=tid;c<dc;c+=blockDim.x)lat[c]=float(static_cast<T>(state.sum>0?acc[c/256]/state.sum:0.f));
+ __syncthreads();
+ for(int d=tid;d<dv;d+=blockDim.x){float x=0;for(int c=0;c<dc;c++)x+=lat[c]*float(wv[(static_cast<int64_t>(h)*dv+d)*dc+c]);out[static_cast<int64_t>(row)*dv+d]=static_cast<T>(x);}
+}
+
 }
 
 torch::Tensor mla_project_cuda(const torch::Tensor& x,const torch::Tensor& w,bool absorb) {
@@ -159,5 +190,9 @@ torch::Tensor mla_decode_fused_cuda(const torch::Tensor& q,const torch::Tensor& 
  TORCH_CHECK(table.scalar_type()==at::kInt && lens.scalar_type()==at::kInt && positions.scalar_type()==at::kInt && std::isfinite(scale) && scale>0,"invalid metadata or scale");
  int nk=0;const int32_t* selected=nullptr;if(indices.has_value()){auto ix=*indices;check(ix,q,"indices");TORCH_CHECK(ix.dim()==3 && ix.size(0)==q.size(0) && ix.size(1)==q.size(1) && ix.scalar_type()==at::kInt,"invalid indices");nk=ix.size(2);selected=ix.data_ptr<int32_t>();}
  auto out=at::empty({q.size(0),q.size(1),q.size(2),wv.size(1)},q.options());if(!out.numel())return out;c10::cuda::CUDAGuard guard(q.device());dim3 grid(q.size(2),q.size(0),q.size(1));
- AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf,at::kBFloat16,q.scalar_type(),"mla_decode_fused",[&]{fused_decode<scalar_t><<<grid,256,2*dc*sizeof(float),at::cuda::getCurrentCUDAStream().stream()>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),wk.data_ptr<scalar_t>(),wv.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),selected,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),dc,wv.size(1),cache.size(1),table.size(1),nk,scale,causal,indices.has_value());});C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+ bool split=indices.has_value()?nk>=512:cache.size(1)*table.size(1)>=512;
+ auto partial=split?at::empty({q.size(0),q.size(1),q.size(2),4,dc+2},q.options().dtype(at::kFloat)):at::Tensor();
+ AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf,at::kBFloat16,q.scalar_type(),"mla_decode_fused",[&]{auto stream=at::cuda::getCurrentCUDAStream().stream();
+  if(split){dim3 sg(q.size(2)*4,q.size(0),q.size(1));fused_split<scalar_t><<<sg,256,dc*sizeof(float),stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),wk.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),selected,partial.data_ptr<float>(),q.size(1),q.size(2),q.size(3),qr.size(3),dc,cache.size(1),table.size(1),nk,scale,causal,indices.has_value(),4);C10_CUDA_KERNEL_LAUNCH_CHECK();fused_split_merge<scalar_t><<<q.size(0)*q.size(1)*q.size(2),256,dc*sizeof(float),stream>>>(partial.data_ptr<float>(),wv.data_ptr<scalar_t>(),out.data_ptr<scalar_t>(),q.size(2),dc,wv.size(1),4);}
+  else fused_decode<scalar_t><<<grid,256,2*dc*sizeof(float),stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),wk.data_ptr<scalar_t>(),wv.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),selected,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),dc,wv.size(1),cache.size(1),table.size(1),nk,scale,causal,indices.has_value());});C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
 }

@@ -100,3 +100,22 @@ def test_causal_conv_parallel_time_tiles():
     actual=causal_conv1d(x,w,state);expected=causal_conv1d_reference(x,w,state)
     torch.testing.assert_close(actual[0],expected[0],atol=2e-5,rtol=2e-5)
     torch.testing.assert_close(actual[1],expected[1])
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('chunk',[32,64])
+def test_chunkwise_mma_block_update(dtype,chunk):
+    from qd_attention.qwen import delta_chunkwise
+    from qd_attention.reference.delta import delta_sequence_reference
+    torch.manual_seed(922);b,t,h,dk,dv=1,chunk+3,2,33,35
+    q=torch.randn(b,t,h,dk,device='cuda',dtype=dtype);k=torch.randn_like(q);v=torch.randn(b,t,h,dv,device='cuda',dtype=dtype)
+    g=-torch.rand(b,t,h,device='cuda')*.1;beta=torch.rand(b,t,h,device='cuda');state=torch.randn(b,h,dk,dv,device='cuda')
+    got=delta_chunkwise(q,k,v,g,beta,state,chunk_size=chunk,backend="wmma");ref=delta_sequence_reference(q,k,v,g,beta,state)
+    tol=8e-5 if dtype==torch.float32 else .02
+    torch.testing.assert_close(got[0],ref[0],atol=tol,rtol=tol);torch.testing.assert_close(got[1],ref[1],atol=8e-5,rtol=8e-5)
+
+
+def test_delta_wmma_rejects_unsupported_shape():
+    from qd_attention.qwen import delta_chunkwise
+    q=torch.randn(1,4,1,4,device='cuda');v=torch.randn(1,4,1,3,device='cuda');g=torch.zeros(1,4,1,device='cuda');beta=torch.ones_like(g);state=torch.zeros(1,1,4,3,device='cuda')
+    with pytest.raises(RuntimeError,match='WMMA requires'):
+        delta_chunkwise(q,q,v,g,beta,state,chunk_size=32,backend='wmma')

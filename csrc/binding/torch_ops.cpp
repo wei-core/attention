@@ -31,13 +31,13 @@ std::tuple<torch::Tensor,torch::Tensor> causal_conv1d_cuda(const torch::Tensor&,
 torch::Tensor lightning_indexer_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&);
 torch::Tensor topk_select_cuda(const torch::Tensor&,int64_t);
 
-std::tuple<torch::Tensor,torch::Tensor> delta_chunkwise_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,int64_t,double);
+std::tuple<torch::Tensor,torch::Tensor> delta_chunkwise_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,int64_t,double,bool);
 
-torch::Tensor mla_prefill_direct_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double);
+torch::Tensor mla_prefill_direct_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,bool);
 
 TORCH_LIBRARY(qd_attention, m) {
-    m.def("mla_prefill_direct(Tensor q, Tensor qr, Tensor latent, Tensor rope, Tensor wk, Tensor wv, Tensor lengths, Tensor positions, float scale) -> Tensor");
-    m.def("delta_chunkwise(Tensor q, Tensor k, Tensor v, Tensor g, Tensor beta, Tensor state, int chunk, float eps) -> (Tensor, Tensor)");
+    m.def("mla_prefill_direct(Tensor q, Tensor qr, Tensor latent, Tensor rope, Tensor wk, Tensor wv, Tensor lengths, Tensor positions, float scale, bool use_mma=False) -> Tensor");
+    m.def("delta_chunkwise(Tensor q, Tensor k, Tensor v, Tensor g, Tensor beta, Tensor state, int chunk, float eps, bool use_mma=False) -> (Tensor, Tensor)");
     m.def("causal_conv1d(Tensor x, Tensor weight, Tensor state) -> (Tensor, Tensor)");
     m.def("lightning_indexer(Tensor q, Tensor k, Tensor weights, Tensor lengths, Tensor positions) -> Tensor");
     m.def("topk_select(Tensor scores, int k) -> Tensor");
