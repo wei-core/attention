@@ -98,3 +98,5 @@ out = qda.gqa_decode(q, k_cache, v_cache, block_table, context_lens)
 所有已实现算子的本轮性能、理论模型和官方公开性能对照见 [全算子性能报告](docs/ALL_ATTENTION_OPERATORS_PERFORMANCE.md)。
 
 按模型来源、理论、当前工程版本、性能差距和指标整理的分析见 [算子理论与优化路线](docs/ATTENTION_THEORY_ENGINEERING_OPTIMIZATION.md)。
+
+延迟、工作项吞吐、逻辑算术强度及示意 Roofline 见 [Attention 指标与 Roofline 报告](docs/ATTENTION_METRICS_ROOFLINE.md)。
