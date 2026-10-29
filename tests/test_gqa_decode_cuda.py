@@ -42,3 +42,16 @@ def test_bad_metadata_dtype_raises():
     )
     with pytest.raises(RuntimeError, match="int32"):
         qda.gqa_decode(q, k, v, pages.long(), lengths)
+
+@pytest.mark.skipif(not CUDA_READY, reason="requires compiled CUDA extension and GPU")
+@pytest.mark.parametrize('dtype,batch,length,block_size', [
+    (torch.float32,1,127,32), (torch.float16,4,128,16),
+    (torch.bfloat16,16,129,32), (torch.float32,1,1024,16),
+    (torch.float16,4,1024,32), (torch.bfloat16,1,4096,16),
+])
+def test_extended_length_matrix(dtype,batch,length,block_size):
+    inputs = make_decode_case(lengths=[length]*batch,q_heads=8,kv_heads=2,head_dim=64,block_size=block_size,dtype=dtype,device='cuda')
+    actual = qda.gqa_decode(*inputs)
+    expected = qda.reference_gqa_decode(*inputs)
+    tol = 3e-4 if dtype == torch.float32 else 2e-2 if dtype == torch.float16 else 6e-2
+    torch.testing.assert_close(actual,expected,atol=tol,rtol=tol)

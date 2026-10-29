@@ -42,3 +42,23 @@ def reference_gqa_decode(
         output = torch.einsum("hl,hld->hd", weights, values)
         outputs.append(output.to(q.dtype))
     return torch.stack(outputs, dim=0)
+
+
+def reference_gqa_prefill(q, k, v, q_lens, kv_lens, *, causal=True, scale=None):
+    """Dense [B,T,H,D] reference with right-aligned causal mask and zero padding."""
+    bsz, tq, hq, d = q.shape
+    hk = k.shape[2]
+    if scale is None:
+        scale = 1.0 / math.sqrt(d)
+    out = torch.zeros_like(q)
+    for b in range(bsz):
+        qlen, klen = int(q_lens[b]), int(kv_lens[b])
+        for row in range(qlen):
+            end = max(0, min(klen, klen - qlen + row + 1)) if causal else klen
+            if end == 0:
+                continue
+            keys = k[b, :end].transpose(0, 1).repeat_interleave(hq // hk, dim=0).float()
+            values = v[b, :end].transpose(0, 1).repeat_interleave(hq // hk, dim=0).float()
+            weights = torch.softmax(torch.einsum('hd,hld->hl', q[b, row].float(), keys) * scale, -1)
+            out[b, row] = torch.einsum('hl,hld->hd', weights, values).to(q.dtype)
+    return out

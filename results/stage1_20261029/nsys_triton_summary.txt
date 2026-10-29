@@ -1,0 +1,9 @@
+Generating SQLite file /tmp/qd-attention-triton.sqlite from /tmp/qd-attention-triton.nsys-rep
+Processing [/tmp/qd-attention-triton.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.5.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]...
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)   Name
+ --------  ---------------  ---------  --------  --------  --------  --------  -----------  -------
+     97.4           420878         15   28058.5   27688.0     27426     33284       1451.0  _decode
+      2.6            11095         15     739.7     752.0       720       786         20.8  _merge

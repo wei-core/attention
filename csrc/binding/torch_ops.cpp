@@ -14,15 +14,23 @@ torch::Tensor gqa_decode_split_cuda(const torch::Tensor&, const torch::Tensor&, 
 
 void kv_append_cuda(const torch::Tensor&, const torch::Tensor&, torch::Tensor, torch::Tensor, const torch::Tensor&, const torch::Tensor&);
 
+torch::Tensor gqa_prefill_cuda(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, double, bool);
+
+torch::Tensor gqa_decode_split_workspace_cuda(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, double, int64_t, const torch::Tensor&);
+
 TORCH_LIBRARY(qd_attention, m) {
+    m.def("gqa_prefill(Tensor q, Tensor k, Tensor v, Tensor q_lens, Tensor kv_lens, float scale, bool causal) -> Tensor");
     m.def("kv_append(Tensor key, Tensor value, Tensor(a!) k_cache, Tensor(b!) v_cache, Tensor block_table, Tensor positions) -> ()");
+    m.def("gqa_decode_split_workspace(Tensor q, Tensor k, Tensor v, Tensor table, Tensor lengths, float scale, int splits, Tensor(a!) workspace) -> Tensor");
     m.def("gqa_decode_split(Tensor q, Tensor k_cache, Tensor v_cache, Tensor block_table, Tensor context_lens, float scale, int splits) -> Tensor");
     m.def("gqa_decode(Tensor q, Tensor k_cache, Tensor v_cache, "
           "Tensor block_table, Tensor context_lens, float scale) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(qd_attention, CUDA, m) {
+    m.impl("gqa_prefill", TORCH_FN(gqa_prefill_cuda));
     m.impl("kv_append", TORCH_FN(kv_append_cuda));
+    m.impl("gqa_decode_split_workspace", TORCH_FN(gqa_decode_split_workspace_cuda));
     m.impl("gqa_decode_split", TORCH_FN(gqa_decode_split_cuda));
     m.impl("gqa_decode", TORCH_FN(gqa_decode_cuda));
 }

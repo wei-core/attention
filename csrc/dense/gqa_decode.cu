@@ -10,6 +10,8 @@
 #include <limits>
 
 #include "../common/block_reduce.cuh"
+#include "../common/online_softmax.cuh"
+#include <c10/cuda/CUDAException.h>
 
 namespace {
 
@@ -32,8 +34,7 @@ __global__ void gqa_paged_decode_kernel(
     const int64_t pages_base = static_cast<int64_t>(b) * max_pages;
 
     __shared__ float warp_sums[8];
-    float m = -CUDART_INF_F;
-    float normalizer = 0.f;
+    qd_attention::SoftmaxState state;
     float acc = 0.f;
 
     const int start = static_cast<int>((static_cast<int64_t>(length) * blockIdx.z) / splits);
@@ -52,22 +53,19 @@ __global__ void gqa_paged_decode_kernel(
         const float score = qd_attention::block_sum(dot, warp_sums) * scale;
 
         // Streaming log-sum-exp: identical scalar state in every thread.
-        const float new_m = fmaxf(m, score);
-        const float alpha = expf(m - new_m);
-        const float p = expf(score - new_m);
-        normalizer = normalizer * alpha + p;
+        float alpha, p;
+        state.add(score, alpha, p);
         for (int col = tid; col < d; col += blockDim.x) {
             // This baseline maps one thread to each output feature.
             // The loop executes once for 32 <= D <= 256 and matching CTA.
             acc = acc * alpha + p * static_cast<float>(v[cache_base + col]);
         }
-        m = new_m;
     }
     if (splits == 1) {
-        if (tid < d) out[q_base + tid] = static_cast<scalar_t>(normalizer > 0.f ? acc / normalizer : 0.f);
+        if (tid < d) out[q_base + tid] = static_cast<scalar_t>(state.sum > 0.f ? acc / state.sum : 0.f);
     } else {
         const int64_t base = ((static_cast<int64_t>(b) * hq + h) * splits + blockIdx.z) * (d + 2);
-        if (tid == 0) { partial[base] = m; partial[base + 1] = normalizer; }
+        if (tid == 0) { partial[base] = state.max; partial[base + 1] = state.sum; }
         if (tid < d) partial[base + 2 + tid] = acc;
     }
 }
@@ -76,20 +74,16 @@ __global__ void gqa_paged_decode_kernel(
 template <typename scalar_t>
 __global__ void merge_splits(const float* partial, scalar_t* out, int hq, int d, int splits) {
     int h = blockIdx.x, b = blockIdx.y, col = threadIdx.x;
-    float m = -CUDART_INF_F, l = 0.f, acc = 0.f;
+    qd_attention::SoftmaxState state;
+    float acc = 0.f;
     for (int s = 0; s < splits; ++s) {
         int64_t base = ((static_cast<int64_t>(b) * hq + h) * splits + s) * (d + 2);
         float other_l = partial[base + 1];
-        if (other_l == 0.f) continue;
-        float other_m = partial[base];
-        float next_m = fmaxf(m, other_m);
-        float a = l == 0.f ? 0.f : expf(m - next_m);
-        float beta = expf(other_m - next_m);
+        float a, beta;
+        state.merge(partial[base], other_l, a, beta);
         if (col < d) acc = a * acc + beta * partial[base + 2 + col];
-        l = a * l + beta * other_l;
-        m = next_m;
     }
-    if (col < d) out[(static_cast<int64_t>(b) * hq + h) * d + col] = static_cast<scalar_t>(l > 0.f ? acc / l : 0.f);
+    if (col < d) out[(static_cast<int64_t>(b) * hq + h) * d + col] = static_cast<scalar_t>(state.sum > 0.f ? acc / state.sum : 0.f);
 }
 
 void check_cuda_contiguous(const torch::Tensor& t, const char* name) {
@@ -105,7 +99,7 @@ torch::Tensor gqa_decode_impl(
     const torch::Tensor& v_cache,
     const torch::Tensor& block_table,
     const torch::Tensor& context_lens,
-    double scale, int64_t splits) {
+    double scale, int64_t splits, const c10::optional<torch::Tensor>& workspace = c10::nullopt) {
     TORCH_CHECK(splits >= 1 && splits <= 65535, "splits must be in [1, 65535]");
     check_cuda_contiguous(q, "q");
     check_cuda_contiguous(k_cache, "k_cache");
@@ -150,7 +144,15 @@ torch::Tensor gqa_decode_impl(
     const int d = static_cast<int>(q.size(2));
     const int threads = d <= 32 ? 32 : d <= 64 ? 64 : d <= 128 ? 128 : 256;
     const dim3 grid(static_cast<unsigned int>(q.size(1)), static_cast<unsigned int>(q.size(0)), static_cast<unsigned int>(splits));
-    auto partial = splits > 1 ? at::empty({q.size(0), q.size(1), splits, d + 2}, q.options().dtype(at::kFloat)) : at::empty({0}, q.options().dtype(at::kFloat));
+    torch::Tensor partial;
+    if (workspace.has_value()) {
+        partial = *workspace;
+        TORCH_CHECK(splits > 1, "workspace requires splits > 1");
+        TORCH_CHECK(partial.is_cuda() && partial.device() == q.device() && partial.is_contiguous() && partial.scalar_type() == at::kFloat, "workspace must be contiguous float32 on q device");
+        TORCH_CHECK(partial.sizes() == at::IntArrayRef({q.size(0), q.size(1), splits, d + 2}), "workspace shape must be [B,Hq,splits,D+2]");
+    } else {
+        partial = splits > 1 ? at::empty({q.size(0), q.size(1), splits, d + 2}, q.options().dtype(at::kFloat)) : at::empty({0}, q.options().dtype(at::kFloat));
+    }
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, q.scalar_type(),
@@ -168,6 +170,7 @@ torch::Tensor gqa_decode_impl(
                 static_cast<int>(k_cache.size(1)),
                 static_cast<int>(block_table.size(1)),
                 static_cast<float>(scale));
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
             if (splits > 1) {
                 const dim3 merge_grid(q.size(1), q.size(0));
                 merge_splits<scalar_t><<<merge_grid, threads, 0, stream>>>(partial.data_ptr<float>(), out.data_ptr<scalar_t>(), q.size(1), d, splits);
@@ -185,4 +188,8 @@ torch::Tensor gqa_decode_cuda(const torch::Tensor& q, const torch::Tensor& k, co
 }
 torch::Tensor gqa_decode_split_cuda(const torch::Tensor& q, const torch::Tensor& k, const torch::Tensor& v, const torch::Tensor& table, const torch::Tensor& lengths, double scale, int64_t splits) {
     return gqa_decode_impl(q, k, v, table, lengths, scale, splits);
+}
+
+torch::Tensor gqa_decode_split_workspace_cuda(const torch::Tensor& q, const torch::Tensor& k, const torch::Tensor& v, const torch::Tensor& table, const torch::Tensor& lengths, double scale, int64_t splits, const torch::Tensor& workspace) {
+    return gqa_decode_impl(q, k, v, table, lengths, scale, splits, workspace);
 }

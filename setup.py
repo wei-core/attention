@@ -1,8 +1,5 @@
-from pathlib import Path
 from setuptools import find_packages, setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-
-ROOT = Path(__file__).parent.resolve()
 
 setup(
     name="qd-attention",
@@ -12,9 +9,10 @@ setup(
         CUDAExtension(
             name="qd_attention._C",
             sources=[
-                str(ROOT / "csrc" / "binding" / "torch_ops.cpp"),
-                str(ROOT / "csrc" / "dense" / "gqa_decode.cu"),
-                str(ROOT / "csrc" / "cache" / "kv_append.cu"),
+                "csrc/binding/torch_ops.cpp",
+                "csrc/dense/gqa_decode.cu",
+                "csrc/dense/gqa_prefill.cu",
+                "csrc/cache/kv_append.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],

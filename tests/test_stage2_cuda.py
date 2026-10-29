@@ -32,3 +32,27 @@ def test_append_then_decode(dtype):
                                qda.reference_gqa_decode(q, k, v, table, lengths),
                                atol=0.06 if dtype == torch.bfloat16 else 0.02 if dtype == torch.float16 else 3e-4,
                                rtol=0.06 if dtype == torch.bfloat16 else 0.02 if dtype == torch.float16 else 3e-4)
+
+def test_split_reusable_workspace():
+    args = make_decode_case(lengths=[0, 7, 129], q_heads=4, kv_heads=1,
+                            head_dim=33, block_size=16, dtype=torch.float32, device='cuda')
+    scratch = torch.empty((3, 4, 8, 35), device='cuda', dtype=torch.float32)
+    for _ in range(2):
+        got = qda.gqa_decode_split(*args, splits=8, workspace=scratch)
+        torch.testing.assert_close(got, qda.reference_gqa_decode(*args), atol=3e-4, rtol=3e-4)
+    with pytest.raises(RuntimeError, match='workspace shape'):
+        qda.gqa_decode_split(*args, splits=4, workspace=scratch)
+
+@pytest.mark.parametrize('dtype', [torch.float32,torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('splits', [1,2,4,16])
+def test_triton_split_decode(dtype,splits):
+    args = make_decode_case(lengths=[0,1,17,65,131],q_heads=8,kv_heads=2,head_dim=64,block_size=16,dtype=dtype,device='cuda')
+    workspace = torch.empty((5,8,splits,66),device='cuda',dtype=torch.float32)
+    result = qda.gqa_decode_split(*args,splits=splits,workspace=workspace,backend='triton')
+    tol = 3e-4 if dtype == torch.float32 else 2e-2 if dtype == torch.float16 else 6e-2
+    torch.testing.assert_close(result,qda.reference_gqa_decode(*args),atol=tol,rtol=tol)
+
+@pytest.mark.parametrize('length', [17, 513, 1024])
+def test_auto_dispatch(length):
+    args = make_decode_case(lengths=[length],q_heads=8,kv_heads=2,head_dim=64,block_size=16,dtype=torch.float32,device='cuda')
+    torch.testing.assert_close(qda.gqa_decode_auto(*args),qda.reference_gqa_decode(*args),atol=3e-4,rtol=3e-4)

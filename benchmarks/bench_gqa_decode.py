@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=100)
     parser.add_argument("--splits", type=int, default=1)
+    parser.add_argument("--backend", choices=["cuda", "triton"], default="cuda")
     args = parser.parse_args()
     if not torch.cuda.is_available() or not qda.is_cuda_extension_loaded():
         parser.error("CUDA GPU and compiled qd_attention extension are required")
@@ -39,7 +40,7 @@ def main():
         dtype=dtype,
         device="cuda",
     )
-    fn = (lambda: qda.gqa_decode(*tensors)) if args.splits == 1 else (lambda: qda.gqa_decode_split(*tensors, splits=args.splits))
+    fn = (lambda: qda.gqa_decode(*tensors)) if args.splits == 1 and args.backend == "cuda" else (lambda: qda.gqa_decode_split(*tensors, splits=args.splits, backend=args.backend))
     for _ in range(args.warmup):
         fn()
     torch.cuda.synchronize()
@@ -55,7 +56,7 @@ def main():
     print(f"shape: B={args.batch} Hq={args.q_heads} Hkv={args.kv_heads} "
           f"D={args.head_dim} L={args.seq_len} Page={args.block_size}")
     print(f"gqa_decode (splits={args.splits}): {ms_per_launch * 1000:.2f} us / call")
-    print("Note: sequential-KV correctness baseline; not a tuned FlashDecoding kernel.")
+    print(f"backend={args.backend}; CUDA events include operator launches and allocations.")
 
 
 if __name__ == "__main__":
