@@ -75,3 +75,28 @@ def test_delta_zero_key_and_zero_beta():
     out,next=delta_recurrent(q,k,v,g,beta,state)
     assert torch.isfinite(out).all() and torch.isfinite(next).all()
     torch.testing.assert_close(out,torch.zeros_like(out));torch.testing.assert_close(next,state*g.exp()[...,None,None])
+
+@pytest.mark.parametrize('dk,dv', [(33, 35), (129, 7)])
+def test_chunkwise_parallel_feature_boundaries(dk, dv):
+    from qd_attention.qwen import delta_chunkwise
+    from qd_attention.reference.delta import delta_sequence_reference
+    torch.manual_seed(75)
+    b,t,h=1,17,2
+    q=torch.randn(b,t,h,dk,device='cuda');k=torch.randn_like(q)
+    v=torch.randn(b,t,h,dv,device='cuda')
+    g=-torch.rand(b,t,h,device='cuda')*.1;beta=torch.rand(b,t,h,device='cuda')
+    state=torch.randn(b,h,dk,dv,device='cuda')
+    actual=delta_chunkwise(q,k,v,g,beta,state,chunk_size=16)
+    expected=delta_sequence_reference(q,k,v,g,beta,state)
+    torch.testing.assert_close(actual[0],expected[0],atol=5e-5,rtol=5e-5)
+    torch.testing.assert_close(actual[1],expected[1],atol=5e-5,rtol=5e-5)
+
+
+def test_causal_conv_parallel_time_tiles():
+    from qd_attention.qwen import causal_conv1d
+    from qd_attention.reference.delta import causal_conv1d_reference
+    torch.manual_seed(80)
+    x=torch.randn(2,35,129,device='cuda');w=torch.randn(129,5,device='cuda');state=torch.randn(2,129,5,device='cuda')
+    actual=causal_conv1d(x,w,state);expected=causal_conv1d_reference(x,w,state)
+    torch.testing.assert_close(actual[0],expected[0],atol=2e-5,rtol=2e-5)
+    torch.testing.assert_close(actual[1],expected[1])

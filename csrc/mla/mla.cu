@@ -53,6 +53,34 @@ __global__ void attend(const T* q,const T* qr,const T* cache,const int32_t* tabl
     }
     for(int d=tid;d<dc;d+=blockDim.x) out[qb+d]=static_cast<T>(state.sum>0?acc[d/blockDim.x]/state.sum:0.f);
 }
+// Partition long contexts into independent online-softmax states.
+template<typename T> __global__ void attend_split(const T* q,const T* qr,const T* cache,const int32_t* table,const int32_t* lens,const int32_t* pos,const int32_t* selected,float* partial,int tq,int hq,int dc,int dr,int page,int pages,int nk,float scale,bool causal,bool sparse,int splits){
+ int h=blockIdx.x/splits,part=blockIdx.x%splits,b=blockIdx.y,t=blockIdx.z,tid=threadIdx.x;
+ int len=lens[b],end=causal?min(len,max(0,pos[b*tq+t]+1)):len,count=sparse?nk:end;
+ int begin=(count*static_cast<int64_t>(part))/splits,stop=(count*static_cast<int64_t>(part+1))/splits;
+ int64_t qb=((static_cast<int64_t>(b)*tq+t)*hq+h)*dc,rb=((static_cast<int64_t>(b)*tq+t)*hq+h)*dr;
+ __shared__ float reduction[8];qd_attention::SoftmaxState state;float acc[2]={0,0};
+ for(int i=begin;i<stop;i++){
+  int s=sparse?selected[(static_cast<int64_t>(b)*tq+t)*nk+i]:i;if(s<0 || s>=end)continue;
+  int phys=table[static_cast<int64_t>(b)*pages+s/page];int64_t base=(static_cast<int64_t>(phys)*page+s%page)*(dc+dr);float dot=0;
+  for(int d=tid;d<dc;d+=blockDim.x)dot+=float(q[qb+d])*float(cache[base+d]);
+  for(int d=tid;d<dr;d+=blockDim.x)dot+=float(qr[rb+d])*float(cache[base+dc+d]);
+  float score=qd_attention::block_sum(dot,reduction)*scale,a,p;state.add(score,a,p);
+  for(int d=tid;d<dc;d+=blockDim.x)acc[d/blockDim.x]=a*acc[d/blockDim.x]+p*float(cache[base+d]);
+ }
+ int64_t base=(((static_cast<int64_t>(b)*tq+t)*hq+h)*splits+part)*(dc+2);
+ for(int d=tid;d<dc;d+=blockDim.x)partial[base+2+d]=acc[d/blockDim.x];
+ if(!tid){partial[base]=state.max;partial[base+1]=state.sum;}
+}
+template<typename T> __global__ void attend_merge(const float* partial,T* out,int rows,int dc,int splits){
+ int row=blockIdx.x,tid=threadIdx.x;qd_attention::SoftmaxState state;float acc[2]={0,0};
+ for(int part=0;part<splits;part++){
+  int64_t base=(static_cast<int64_t>(row)*splits+part)*(dc+2);float a,p;state.merge(partial[base],partial[base+1],a,p);
+  for(int d=tid;d<dc;d+=blockDim.x)acc[d/blockDim.x]=a*acc[d/blockDim.x]+p*partial[base+2+d];
+ }
+ for(int d=tid;d<dc;d+=blockDim.x)out[static_cast<int64_t>(row)*dc+d]=static_cast<T>(state.sum>0?acc[d/blockDim.x]/state.sum:0.f);
+}
+
 }
 
 torch::Tensor mla_project_cuda(const torch::Tensor& x,const torch::Tensor& w,bool absorb) {
@@ -91,6 +119,11 @@ torch::Tensor mla_attend_cuda(const torch::Tensor& q,const torch::Tensor& qr,con
     if(indices.has_value()) { auto ix=*indices; check(ix,q,"indices"); TORCH_CHECK(ix.dim()==3 && ix.size(0)==q.size(0) && ix.size(1)==q.size(1) && ix.scalar_type()==at::kInt,"indices must be int32 [B,T,K]"); nk=ix.size(2); ptr=ix.data_ptr<int32_t>(); }
     auto out=at::empty_like(q); if(q.numel()==0) return out;
     c10::cuda::CUDAGuard guard(q.device()); dim3 grid(q.size(2),q.size(0),q.size(1));
-    AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf,at::kBFloat16,q.scalar_type(),"mla_attend",[&] { attend<scalar_t><<<grid,256,0,at::cuda::getCurrentCUDAStream().stream()>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),ptr,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),cache.size(1),table.size(1),nk,scale,causal,indices.has_value()); });
+    bool split=(indices.has_value()?nk>=512:cache.size(1)*table.size(1)>=512);
+    auto partial=split?at::empty({q.size(0),q.size(1),q.size(2),4,q.size(3)+2},q.options().dtype(at::kFloat)):at::Tensor();
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf,at::kBFloat16,q.scalar_type(),"mla_attend",[&] {
+      auto stream=at::cuda::getCurrentCUDAStream().stream();
+      if(split){dim3 split_grid(q.size(2)*4,q.size(0),q.size(1));attend_split<scalar_t><<<split_grid,256,0,stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),ptr,partial.data_ptr<float>(),q.size(1),q.size(2),q.size(3),qr.size(3),cache.size(1),table.size(1),nk,scale,causal,indices.has_value(),4);C10_CUDA_KERNEL_LAUNCH_CHECK();attend_merge<scalar_t><<<q.size(0)*q.size(1)*q.size(2),256,0,stream>>>(partial.data_ptr<float>(),out.data_ptr<scalar_t>(),q.size(0)*q.size(1)*q.size(2),q.size(3),4);}
+      else attend<scalar_t><<<grid,256,0,stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),ptr,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),cache.size(1),table.size(1),nk,scale,causal,indices.has_value()); });
     C10_CUDA_KERNEL_LAUNCH_CHECK(); return out;
 }

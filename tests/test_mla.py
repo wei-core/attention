@@ -61,3 +61,34 @@ def test_mla_typical_latent_width():
     lens=torch.tensor([L],device='cuda',dtype=torch.int32);positions=torch.tensor([[16]],device='cuda',dtype=torch.int32)
     got=mla_decode(q,qr,cache,table,lens,positions,wk,wv);ref=mla_reference(q,qr,c,kr,wk,wv,positions,lens)
     torch.testing.assert_close(got,ref,atol=.05,rtol=.08)
+
+@pytest.mark.parametrize('sparse',[False,True])
+@pytest.mark.parametrize('dtype',[torch.float32,torch.bfloat16])
+def test_mla_split_long_context(sparse,dtype):
+    from qd_attention.mla import mla_latent_attention
+    torch.manual_seed(317);L=544;dc=33;dr=9;h=2
+    q=torch.randn(1,2,h,dc,device='cuda',dtype=dtype)
+    qr=torch.randn(1,2,h,dr,device='cuda',dtype=dtype)
+    cache=torch.randn(34,16,dc+dr,device='cuda',dtype=dtype)
+    table=torch.arange(34,device='cuda',dtype=torch.int32).reshape(1,-1)
+    lens=torch.tensor([L],device='cuda',dtype=torch.int32)
+    positions=torch.tensor([[100,543]],device='cuda',dtype=torch.int32)
+    indices=torch.arange(512,device='cuda',dtype=torch.int32).reshape(1,1,-1).expand(1,2,-1).contiguous() if sparse else None
+    got=mla_latent_attention(q,qr,cache,table,lens,positions,scale=.1,indices=indices)
+    c=cache.reshape(1,L,dc+dr); scores=(torch.einsum('bthd,bld->bthl',q.float(),c[:,:,:dc].float())+torch.einsum('bthd,bld->bthl',qr.float(),c[:,:,dc:].float()))*.1
+    mask=torch.arange(L,device='cuda')[None,None,None,:]<=positions[:,:,None,None]
+    if sparse:mask=mask & (torch.arange(L,device='cuda')[None,None,None,:]<512)
+    ref=torch.einsum('bthl,bld->bthd',scores.masked_fill(~mask,-torch.inf).softmax(-1),c[:,:,:dc].float()).to(dtype)
+    torch.testing.assert_close(got,ref,atol=2e-5 if dtype==torch.float32 else .02,rtol=2e-5 if dtype==torch.float32 else .02)
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+def test_mla_prefill_tiled_query_and_latent(dtype):
+    from qd_attention.mla import mla_prefill
+    torch.manual_seed(550);b,t,h,dn,dr,dc,dv,L=2,9,2,7,5,33,9,21
+    q=torch.randn(b,t,h,dn,device='cuda',dtype=dtype);qr=torch.randn(b,t,h,dr,device='cuda',dtype=dtype)
+    c=torch.randn(b,L,dc,device='cuda',dtype=dtype);kr=torch.randn(b,L,dr,device='cuda',dtype=dtype)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype);wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)
+    lens=torch.tensor([21,3],device='cuda',dtype=torch.int32);pos=torch.tensor([[0,1,3,5,9,13,16,19,20],[-1,0,1,2,2,2,2,2,2]],device='cuda',dtype=torch.int32)
+    actual=mla_prefill(q,qr,c,kr,wk,wv,lens,pos);ref=mla_reference(q,qr,c,kr,wk,wv,pos,lens)
+    tol=4e-4 if dtype==torch.float32 else .03 if dtype==torch.float16 else .1
+    torch.testing.assert_close(actual,ref,atol=tol,rtol=tol)

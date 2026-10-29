@@ -38,3 +38,29 @@ def test_indexer_selects_logical_indices_for_paged_mla():
 def test_topk_nan_does_not_displace_valid_entries():
     scores=torch.tensor([[[float('nan'), 3., 2., float('inf')]]],device='cuda')
     torch.testing.assert_close(topk_select(scores,2),topk_reference(scores,2))
+
+@pytest.mark.parametrize('features', [1, 33, 97])
+def test_indexer_warp_feature_boundaries(features):
+    torch.manual_seed(73)
+    q = torch.randn(1, 3, 5, features, device='cuda')
+    k = torch.randn(1, 67, features, device='cuda')
+    weights = torch.randn(1, 3, 5, device='cuda')
+    lengths = torch.tensor([65], device='cuda', dtype=torch.int32)
+    positions = torch.tensor([[0, 34, 66]], device='cuda', dtype=torch.int32)
+    torch.testing.assert_close(lightning_indexer(q, k, weights, lengths, positions),
+                               lightning_indexer_reference(q, k, weights, lengths, positions),
+                               atol=2e-4, rtol=2e-4)
+
+
+def test_parallel_topk_cross_block_and_repeated_scores():
+    torch.manual_seed(74)
+    scores = torch.randint(-3, 4, (2, 3, 513), device='cuda').float()
+    scores[0, 0, 257] = float('nan')
+    torch.testing.assert_close(topk_select(scores, 520), topk_reference(scores, 520))
+
+@pytest.mark.parametrize('k', [1, 16, 64])
+def test_topk_tiled_merge(k):
+    torch.manual_seed(1234)
+    scores=torch.randint(-8,9,(2,3,777),device='cuda').float()
+    scores[0,0,:256]=float('nan')
+    torch.testing.assert_close(topk_select(scores,k),topk_reference(scores,k))

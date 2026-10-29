@@ -58,3 +58,27 @@ def test_empty_query_and_large_logits(backend,dtype):
     assert torch.isfinite(actual).all()
     tol=3e-4 if dtype==torch.float32 else 0.06
     torch.testing.assert_close(actual,expected,atol=tol,rtol=tol)
+
+@pytest.mark.parametrize('dtype',[torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('causal',[False,True])
+@pytest.mark.parametrize('d',[33,64,129])
+def test_cuda_wmma_query_and_kv_tile_boundaries(dtype,causal,d):
+    torch.manual_seed(619)
+    q=torch.randn(2,130,4,d,device='cuda',dtype=dtype)
+    k=torch.randn(2,145,2,d,device='cuda',dtype=dtype);v=torch.randn_like(k)
+    ql=torch.tensor([130,7],device='cuda',dtype=torch.int32)
+    kl=torch.tensor([145,3],device='cuda',dtype=torch.int32)
+    actual=qda.gqa_prefill(q,k,v,ql,kl,causal=causal)
+    expected=reference_gqa_prefill(q,k,v,ql,kl,causal=causal)
+    torch.testing.assert_close(actual,expected,atol=.02 if dtype==torch.float16 else .06,rtol=.02 if dtype==torch.float16 else .06)
+
+
+def test_cuda_wmma_empty_and_large_logits():
+    torch.manual_seed(77)
+    q=torch.randn(2,130,4,64,device='cuda',dtype=torch.bfloat16)*8
+    k=torch.randn(2,145,1,64,device='cuda',dtype=torch.bfloat16)*8;v=torch.randn_like(k)
+    ql=torch.tensor([0,130],device='cuda',dtype=torch.int32);kl=torch.tensor([145,145],device='cuda',dtype=torch.int32)
+    actual=qda.gqa_prefill(q,k,v,ql,kl)
+    expected=reference_gqa_prefill(q,k,v,ql,kl)
+    assert torch.isfinite(actual).all()
+    torch.testing.assert_close(actual,expected,atol=.06,rtol=.06)

@@ -56,3 +56,12 @@ def test_triton_split_decode(dtype,splits):
 def test_auto_dispatch(length):
     args = make_decode_case(lengths=[length],q_heads=8,kv_heads=2,head_dim=64,block_size=16,dtype=torch.float32,device='cuda')
     torch.testing.assert_close(qda.gqa_decode_auto(*args),qda.reference_gqa_decode(*args),atol=3e-4,rtol=3e-4)
+
+
+def test_append_unaligned_contiguous_fallback():
+    base=torch.randn(1+2*33,device='cuda');key=base[1:].view(1,2,33)
+    value=torch.randn_like(key)
+    cache=torch.zeros(1,4,2,33,device='cuda');other=torch.zeros_like(cache)
+    table=torch.zeros(1,1,device='cuda',dtype=torch.int32);pos=torch.tensor([2],device='cuda',dtype=torch.int32)
+    qda.kv_append(key,value,cache,other,table,pos)
+    torch.testing.assert_close(cache[0,2],key[0]);torch.testing.assert_close(other[0,2],value[0])
