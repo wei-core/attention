@@ -94,4 +94,3 @@ cd /home/ubuntu/ai-infra/minivllm/myvllm/atttention-kernel
 ```
 
 可通过 `--warmup`、`--repeats`、`--inner` 调整采样次数；如果 FlashAttention 或 GPU 不可用，脚本会报错，不会静默把对照当作已完成。
-
