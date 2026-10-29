@@ -18,6 +18,7 @@ torch::Tensor gqa_prefill_cuda(const torch::Tensor&, const torch::Tensor&, const
 
 torch::Tensor gqa_decode_split_workspace_cuda(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, double, int64_t, const torch::Tensor&);
 
+torch::Tensor mla_decode_fused_cuda(const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const c10::optional<torch::Tensor>&,double,bool);
 torch::Tensor mla_project_cuda(const torch::Tensor&, const torch::Tensor&, bool);
 void latent_kv_write_cuda(const torch::Tensor&, const torch::Tensor&, torch::Tensor, const torch::Tensor&);
 torch::Tensor mla_attend_cuda(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const c10::optional<torch::Tensor>&, double, bool);
@@ -43,6 +44,7 @@ TORCH_LIBRARY(qd_attention, m) {
     m.def("gated_attention(Tensor attn, Tensor gate) -> Tensor");
     m.def("delta_output(Tensor x, Tensor z, Tensor weight, float eps) -> Tensor");
     m.def("delta_recurrent(Tensor q, Tensor k, Tensor v, Tensor g, Tensor beta, Tensor state, float eps) -> (Tensor, Tensor)");
+    m.def("mla_decode_fused(Tensor q, Tensor qr, Tensor cache, Tensor table, Tensor lens, Tensor positions, Tensor wk, Tensor wv, Tensor? indices, float scale, bool causal) -> Tensor");
     m.def("mla_project(Tensor x, Tensor weight, bool absorb) -> Tensor");
     m.def("latent_kv_write(Tensor latent, Tensor rope, Tensor(a!) cache, Tensor slots) -> ()");
     m.def("mla_attend(Tensor q, Tensor q_rope, Tensor cache, Tensor table, Tensor lens, Tensor positions, Tensor? indices, float scale, bool causal) -> Tensor");
@@ -63,6 +65,7 @@ TORCH_LIBRARY_IMPL(qd_attention, CUDA, m) {
     m.impl("gated_attention", TORCH_FN(gated_attention_cuda));
     m.impl("delta_output", TORCH_FN(delta_output_cuda));
     m.impl("delta_recurrent", TORCH_FN(delta_recurrent_cuda));
+    m.impl("mla_decode_fused", TORCH_FN(mla_decode_fused_cuda));
     m.impl("mla_project", TORCH_FN(mla_project_cuda));
     m.impl("latent_kv_write", TORCH_FN(latent_kv_write_cuda));
     m.impl("mla_attend", TORCH_FN(mla_attend_cuda));

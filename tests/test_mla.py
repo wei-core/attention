@@ -92,3 +92,20 @@ def test_mla_prefill_tiled_query_and_latent(dtype):
     actual=mla_prefill(q,qr,c,kr,wk,wv,lens,pos);ref=mla_reference(q,qr,c,kr,wk,wv,pos,lens)
     tol=4e-4 if dtype==torch.float32 else .03 if dtype==torch.float16 else .1
     torch.testing.assert_close(actual,ref,atol=tol,rtol=tol)
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float16,torch.bfloat16])
+@pytest.mark.parametrize('sparse',[False,True])
+@pytest.mark.parametrize('causal',[False,True])
+def test_fused_mla_decode_matches_unfused(dtype,sparse,causal):
+    from qd_attention.mla import mla_latent_attention
+    torch.manual_seed(79);b,h,dn,dr,dc,dv,L,P=2,3,17,9,33,15,32,16
+    q=torch.randn(b,1,h,dn,device='cuda',dtype=dtype);qr=torch.randn(b,1,h,dr,device='cuda',dtype=dtype)
+    cache=torch.randn(4,P,dc+dr,device='cuda',dtype=dtype);table=torch.tensor([[2,0],[3,1]],device='cuda',dtype=torch.int32)
+    lens=torch.tensor([32,0],device='cuda',dtype=torch.int32);pos=torch.tensor([[17],[-1]],device='cuda',dtype=torch.int32)
+    wk=torch.randn(h,dn,dc,device='cuda',dtype=dtype);wv=torch.randn(h,dv,dc,device='cuda',dtype=dtype)
+    ix=torch.tensor([[[0,4,17,18,-1]],[[0,1,-1,-1,-1]]],device='cuda',dtype=torch.int32) if sparse else None
+    scale=1/math.sqrt(dn+dr)
+    ref=mla_value_project(mla_latent_attention(mla_query_absorb(q,wk),qr,cache,table,lens,pos,scale=scale,causal=causal,indices=ix),wv)
+    actual=mla_decode(q,qr,cache,table,lens,pos,wk,wv,scale=scale,causal=causal,indices=ix)
+    tol=1e-4 if dtype==torch.float32 else .02 if dtype==torch.float16 else .12
+    torch.testing.assert_close(actual,ref,atol=tol,rtol=tol)

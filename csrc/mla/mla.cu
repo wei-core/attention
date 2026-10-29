@@ -81,6 +81,27 @@ template<typename T> __global__ void attend_merge(const float* partial,T* out,in
  for(int d=tid;d<dc;d+=blockDim.x)out[static_cast<int64_t>(row)*dc+d]=static_cast<T>(state.sum>0?acc[d/blockDim.x]/state.sum:0.f);
 }
 
+// Fused short-context decode: query absorption, paged attention and value
+// projection are performed in one CTA; no intermediate tensors are allocated.
+template<typename T> __global__ void fused_decode(const T* q,const T* qr,const T* cache,const T* wk,const T* wv,const int32_t* table,const int32_t* lens,const int32_t* pos,const int32_t* selected,T* out,int tq,int H,int dn,int dr,int dc,int dv,int page,int pages,int nk,float scale,bool causal,bool sparse){
+ int h=blockIdx.x,b=blockIdx.y,t=blockIdx.z,tid=threadIdx.x;int64_t row=(static_cast<int64_t>(b)*tq+t)*H+h;
+ extern __shared__ float sm[];float* qa=sm;float* acc=sm+dc;__shared__ float red[8];
+ for(int c=tid;c<dc;c+=blockDim.x){float x=0;for(int d=0;d<dn;d++)x+=float(q[row*dn+d])*float(wk[(static_cast<int64_t>(h)*dn+d)*dc+c]);qa[c]=float(static_cast<T>(x));acc[c]=0;}
+ __syncthreads();int end=causal?min(lens[b],max(0,pos[b*tq+t]+1)):lens[b];int count=sparse?nk:end;qd_attention::SoftmaxState state;
+ for(int i=0;i<count;i++){
+  int index=sparse?selected[(static_cast<int64_t>(b)*tq+t)*nk+i]:i;if(index<0 || index>=end)continue;
+  int phys=table[static_cast<int64_t>(b)*pages+index/page];int64_t off=(static_cast<int64_t>(phys)*page+index%page)*(dc+dr);float dot=0;
+  for(int c=tid;c<dc;c+=blockDim.x)dot+=qa[c]*float(cache[off+c]);
+  for(int d=tid;d<dr;d+=blockDim.x)dot+=float(qr[row*dr+d])*float(cache[off+dc+d]);
+  float score=qd_attention::block_sum(dot,red)*scale,a,p;state.add(score,a,p);
+  for(int c=tid;c<dc;c+=blockDim.x)acc[c]=a*acc[c]+p*float(cache[off+c]);
+  __syncthreads();
+ }
+ for(int c=tid;c<dc;c+=blockDim.x)acc[c]=float(static_cast<T>(state.sum>0?acc[c]/state.sum:0.f));
+ __syncthreads();
+ for(int d=tid;d<dv;d+=blockDim.x){float x=0;for(int c=0;c<dc;c++)x+=acc[c]*float(wv[(static_cast<int64_t>(h)*dv+d)*dc+c]);out[row*dv+d]=static_cast<T>(x);}
+}
+
 }
 
 torch::Tensor mla_project_cuda(const torch::Tensor& x,const torch::Tensor& w,bool absorb) {
@@ -126,4 +147,17 @@ torch::Tensor mla_attend_cuda(const torch::Tensor& q,const torch::Tensor& qr,con
       if(split){dim3 split_grid(q.size(2)*4,q.size(0),q.size(1));attend_split<scalar_t><<<split_grid,256,0,stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),ptr,partial.data_ptr<float>(),q.size(1),q.size(2),q.size(3),qr.size(3),cache.size(1),table.size(1),nk,scale,causal,indices.has_value(),4);C10_CUDA_KERNEL_LAUNCH_CHECK();attend_merge<scalar_t><<<q.size(0)*q.size(1)*q.size(2),256,0,stream>>>(partial.data_ptr<float>(),out.data_ptr<scalar_t>(),q.size(0)*q.size(1)*q.size(2),q.size(3),4);}
       else attend<scalar_t><<<grid,256,0,stream>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),ptr,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),cache.size(1),table.size(1),nk,scale,causal,indices.has_value()); });
     C10_CUDA_KERNEL_LAUNCH_CHECK(); return out;
+}
+
+
+torch::Tensor mla_decode_fused_cuda(const torch::Tensor& q,const torch::Tensor& qr,const torch::Tensor& cache,const torch::Tensor& table,const torch::Tensor& lens,const torch::Tensor& positions,const torch::Tensor& wk,const torch::Tensor& wv,const c10::optional<torch::Tensor>& indices,double scale,bool causal){
+ for(const auto& x:{q,qr,cache,table,lens,positions,wk,wv})check(x,q,"input");dtype(q);
+ TORCH_CHECK(q.dim()==4 && qr.dim()==4 && cache.dim()==3 && table.dim()==2 && lens.dim()==1 && positions.dim()==2 && wk.dim()==3 && wv.dim()==3,"invalid tensor ranks");
+ TORCH_CHECK(q.size(0)==qr.size(0) && q.size(1)==qr.size(1) && q.size(2)==qr.size(2) && q.size(0)==table.size(0) && q.size(0)==lens.size(0) && positions.size(0)==q.size(0) && positions.size(1)==q.size(1),"shape mismatch");
+ int64_t dc=wk.size(2);TORCH_CHECK(q.size(2)>0 && q.size(3)>0 && qr.size(3)>0 && dc>0 && dc<=512 && wv.size(1)>0 && wk.size(0)==q.size(2) && wk.size(1)==q.size(3) && wv.size(0)==q.size(2) && wv.size(2)==dc && cache.size(2)==dc+qr.size(3) && cache.size(0)>0 && cache.size(1)>0 && table.size(1)>0 && q.size(0)<=65535 && q.size(1)<=65535,"invalid dimensions");
+ TORCH_CHECK(q.scalar_type()==qr.scalar_type() && q.scalar_type()==cache.scalar_type() && q.scalar_type()==wk.scalar_type() && q.scalar_type()==wv.scalar_type(),"dtype mismatch");
+ TORCH_CHECK(table.scalar_type()==at::kInt && lens.scalar_type()==at::kInt && positions.scalar_type()==at::kInt && std::isfinite(scale) && scale>0,"invalid metadata or scale");
+ int nk=0;const int32_t* selected=nullptr;if(indices.has_value()){auto ix=*indices;check(ix,q,"indices");TORCH_CHECK(ix.dim()==3 && ix.size(0)==q.size(0) && ix.size(1)==q.size(1) && ix.scalar_type()==at::kInt,"invalid indices");nk=ix.size(2);selected=ix.data_ptr<int32_t>();}
+ auto out=at::empty({q.size(0),q.size(1),q.size(2),wv.size(1)},q.options());if(!out.numel())return out;c10::cuda::CUDAGuard guard(q.device());dim3 grid(q.size(2),q.size(0),q.size(1));
+ AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf,at::kBFloat16,q.scalar_type(),"mla_decode_fused",[&]{fused_decode<scalar_t><<<grid,256,2*dc*sizeof(float),at::cuda::getCurrentCUDAStream().stream()>>>(q.data_ptr<scalar_t>(),qr.data_ptr<scalar_t>(),cache.data_ptr<scalar_t>(),wk.data_ptr<scalar_t>(),wv.data_ptr<scalar_t>(),table.data_ptr<int32_t>(),lens.data_ptr<int32_t>(),positions.data_ptr<int32_t>(),selected,out.data_ptr<scalar_t>(),q.size(1),q.size(2),q.size(3),qr.size(3),dc,wv.size(1),cache.size(1),table.size(1),nk,scale,causal,indices.has_value());});C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
 }

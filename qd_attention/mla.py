@@ -42,6 +42,13 @@ def mla_latent_attention(q_absorbed, q_rope, cache, block_table, lengths, positi
 def mla_decode(q_nope, q_rope, cache, block_table, lengths, positions, w_uk, w_uv, *, scale=None, causal=True, indices=None):
     """Absorbed paged MLA for decode or multiple queries; pre-applied RoPE."""
     if scale is None: scale = 1.0 / math.sqrt(q_nope.shape[-1] + q_rope.shape[-1])
+    if (q_nope.ndim == 4 and q_nope.shape[1] == 1 and cache.ndim == 3 and
+            block_table.ndim == 2 and w_uk.ndim == 3 and w_uk.shape[-1] <= 512 and
+            (indices is not None and indices.ndim == 3 and indices.shape[-1] < 512 or
+             indices is None and cache.shape[1] * block_table.shape[1] < 512)):
+        _ready()
+        return torch.ops.qd_attention.mla_decode_fused(q_nope, q_rope, cache, block_table,
+            lengths, positions, w_uk, w_uv, indices, float(scale), causal)
     absorbed = mla_query_absorb(q_nope, w_uk)
     latent = mla_latent_attention(absorbed, q_rope, cache, block_table, lengths, positions, scale=scale, causal=causal, indices=indices)
     return mla_value_project(latent, w_uv)

@@ -39,16 +39,33 @@ template<typename T> __global__ void chunks(const T* q,const T* k,const T* v,con
     int64_t gh=(static_cast<int64_t>(b)*Tlen+start+i)*H+h;A[i*C+j]=beta[gh]*dot*expf(G[i]-G[j]);}
   }
   __syncthreads();
-  // Independent RHS columns solve the same lower triangular system in parallel.
-  for(int col=tid;col<D+V;col+=blockDim.x){
-   for(int i=0;i<n;i++){
-    int64_t gh=(static_cast<int64_t>(b)*Tlen+start+i)*H+h;
-    float value=col<D?beta[gh]*expf(G[i])*K[i*D+col]:beta[gh]*float(v[gh*V+col-D]);
-    for(int j=0;j<i;j++)value-=A[i*C+j]*(col<D?R[j*D+col]:U[j*V+col-D]);
-    if(col<D)R[i*D+col]=value;else U[i*V+col-D]=value;
-   }
+  // Blocked forward substitution: solve a small diagonal block for every
+  // independent RHS column, then update the remaining rows in parallel.
+  int width=D+V;
+  for(int x=tid;x<n*width;x+=blockDim.x){int i=x/width,col=x%width;
+   int64_t gh=(static_cast<int64_t>(b)*Tlen+start+i)*H+h;
+   if(col<D)R[i*D+col]=beta[gh]*expf(G[i])*K[i*D+col];
+   else U[i*V+col-D]=beta[gh]*float(v[gh*V+col-D]);
   }
   __syncthreads();
+  constexpr int block_rows=8;
+  for(int row0=0;row0<n;row0+=block_rows){
+   int stop=min(n,row0+block_rows);
+   for(int col=tid;col<width;col+=blockDim.x){
+    for(int i=row0;i<stop;i++){
+     float value=col<D?R[i*D+col]:U[i*V+col-D];
+     for(int j=row0;j<i;j++)value-=A[i*C+j]*(col<D?R[j*D+col]:U[j*V+col-D]);
+     if(col<D)R[i*D+col]=value;else U[i*V+col-D]=value;
+    }
+   }
+   __syncthreads();
+   for(int x=tid;x<(n-stop)*width;x+=blockDim.x){int i=stop+x/width,col=x%width;
+    float value=col<D?R[i*D+col]:U[i*V+col-D];
+    for(int j=row0;j<stop;j++)value-=A[i*C+j]*(col<D?R[j*D+col]:U[j*V+col-D]);
+    if(col<D)R[i*D+col]=value;else U[i*V+col-D]=value;
+   }
+   __syncthreads();
+  }
   for(int x=tid;x<n*V;x+=blockDim.x){int i=x/V,c=x%V;float p=0;for(int d=0;d<D;d++)p+=R[i*D+d]*final[sb+d*V+c];U[x]-=p;}
   __syncthreads();
   for(int x=tid;x<n*V;x+=blockDim.x){int i=x/V,c=x%V;float value=0;for(int d=0;d<D;d++)value+=expf(G[i])*Q[i*D+d]*final[sb+d*V+c];
