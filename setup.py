@@ -7,18 +7,18 @@ setup(
     packages=find_packages(),
     ext_modules=[
         CUDAExtension(
-            name="qd_attention._C",
+            name="attention._C",
             sources=[
                 "csrc/binding/torch_ops.cpp",
-                "csrc/dense/gqa_decode.cu",
-                "csrc/dense/gqa_prefill.cu",
-                "csrc/cache/kv_append.cu",
-                "csrc/mla/mla.cu",
-                "csrc/mla/mla_prefill.cu",
-                "csrc/qwen/gates.cu",
-                "csrc/qwen/causal_conv.cu",
-                "csrc/qwen/delta_chunkwise.cu",
-                "csrc/sparse/indexer.cu",
+                "csrc/cuda/dense/gqa_decode.cu",
+                "csrc/cuda/dense/gqa_prefill.cu",
+                "csrc/cuda/cache/kv_append.cu",
+                "csrc/cuda/mla/mla.cu",
+                "csrc/cuda/mla/mla_prefill.cu",
+                "csrc/cuda/qwen/gates.cu",
+                "csrc/cuda/qwen/causal_conv.cu",
+                "csrc/cuda/qwen/delta_chunkwise.cu",
+                "csrc/cuda/sparse/indexer.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],

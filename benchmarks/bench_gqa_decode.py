@@ -8,8 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
-import qd_attention as qda
-from qd_attention.testing import make_decode_case
+import attention as qda
+from data import make_decode_case
 
 
 def main():

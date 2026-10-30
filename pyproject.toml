@@ -12,7 +12,3 @@ dependencies = ["torch>=2.4"]
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 optimized = ["triton>=3.0"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra"

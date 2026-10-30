@@ -1,8 +1,0 @@
-Generating SQLite file /tmp/qd-attention-profile.sqlite from /tmp/qd-attention-profile.nsys-rep
-Processing [/tmp/qd-attention-profile.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.5.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]...
-
- ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
-
- Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                                  Name
- --------  ---------------  ---------  --------  --------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
-    100.0          5194233          7  742033.3  672439.0    671283    997159     128120.4  void <unnamed>::gqa_paged_decode_kernel<c10::BFloat16>(const T1 *, const T1 *, const T1 *, const in…

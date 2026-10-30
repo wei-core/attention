@@ -3,7 +3,7 @@ import argparse,datetime,json,math,pathlib,statistics,sys
 p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--output',required=True);p.add_argument('--wmma',action='store_true');args=p.parse_args()
 sys.path.insert(0,str(pathlib.Path(args.root).resolve()))
 import torch
-import qd_attention as q
+import attention as q
 torch.manual_seed(137);device='cuda';rows=[]
 def bench(name,fn,shape):
  for _ in range(5):fn()
